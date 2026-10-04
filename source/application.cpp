@@ -26,7 +26,7 @@ namespace application {
         auto& context = graphics::internal::context;
 
         vkResetCommandBuffer(fd.command_buffer, 0);
-
+        
         const VkCommandBufferBeginInfo command_buffer_begin = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
