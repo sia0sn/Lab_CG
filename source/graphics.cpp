@@ -97,7 +97,7 @@ namespace graphics {
 
 
 
-    VkPipeline createGraphicsPipeline(VkRenderPass render_pass, VkPipelineLayout layout, VkShaderModule vert_shader, VkShaderModule frag_shader, VkVertexInputBindingDescription binding, const std::vector<VkVertexInputAttributeDescription>& attributes)
+    VkPipeline createGraphicsPipeline(VkRenderPass render_pass, VkPipelineLayout layout, VkShaderModule vert_shader, VkShaderModule frag_shader, VkVertexInputBindingDescription binding, const std::vector<VkVertexInputAttributeDescription>& attributes, VkPrimitiveTopology topology)
     {
         VkPipelineShaderStageCreateInfo stages[2]{};
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -118,7 +118,7 @@ namespace graphics {
 
         VkPipelineInputAssemblyStateCreateInfo input_asm{};
         input_asm.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-        input_asm.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        input_asm.topology = topology;
 
         VkPipelineViewportStateCreateInfo viewport{};
         viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;

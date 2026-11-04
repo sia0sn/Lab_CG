@@ -23,7 +23,6 @@ namespace application {
             glm::vec3 normal;
         };
 
-        // Выравнивание памяти для GPU (std140)
         struct alignas(16) SceneUBO {
             glm::mat4 view;
             glm::mat4 proj;
@@ -37,44 +36,58 @@ namespace application {
             glm::mat4 model;
             glm::vec4 albedo;
             glm::vec4 specColor;
-            glm::vec4 specParams; // x: shininess
+            glm::vec4 specParams;
         };
 
         struct alignas(16) PointLight {
-            glm::vec4 position; // w - не используется (или intensity)
+            glm::vec4 position;
             glm::vec4 color;
-            glm::vec4 params;   // x: constant, y: linear, z: quadratic
+            glm::vec4 params;
         };
 
         struct alignas(16) SpotLight {
             glm::vec4 position;
             glm::vec4 direction;
             glm::vec4 color;
-            glm::vec4 params;   // x: constant, y: linear, z: quadratic, w: cos(inner)
-            glm::vec4 params2;  // x: cos(outer)
+            glm::vec4 params;
+            glm::vec4 params2;
         };
 
-        // Global Vulkan Handles
+        // ==========================================
+        // ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (видны везде)
+        // ==========================================
         VkDescriptorSetLayout g_scene_layout = VK_NULL_HANDLE;
         VkDescriptorSetLayout g_model_layout = VK_NULL_HANDLE;
         VkPipelineLayout      g_object_pipeline_layout = VK_NULL_HANDLE;
         VkPipelineLayout      g_simple_pipeline_layout = VK_NULL_HANDLE;
+        VkPipelineLayout      g_line_pipeline_layout = VK_NULL_HANDLE;
         VkPipeline            g_object_pipeline = VK_NULL_HANDLE;
         VkPipeline            g_simple_pipeline = VK_NULL_HANDLE;
+        VkPipeline            g_line_pipeline = VK_NULL_HANDLE;
         VkDescriptorPool      g_descriptor_pool = VK_NULL_HANDLE;
 
         constexpr int MAX_LIGHTS = 10;
 
+        // Буферы для додекаэдра
         Buffer g_vertex_buffer{};
         Buffer g_index_buffer{};
         uint32_t g_index_count = 0;
 
+        // Буферы для кубиков (лампочек)
+        Buffer g_cube_vertex_buffer{};
+        Buffer g_cube_index_buffer{};
+        uint32_t g_cube_index_count = 0;
+
+        // Буферы для линий (конусов)
+        Buffer g_line_vertex_buffer{};
+        uint32_t g_line_vertex_count = 0;
+
+        // Буферы сцены и света
         Buffer g_scene_ubo{};
         Buffer g_point_ssbo{};
         Buffer g_spot_ssbo{};
         VkDescriptorSet g_scene_set = VK_NULL_HANDLE;
 
-        // Data
         SceneUBO g_scene_data{};
         std::vector<PointLight> g_point_lights;
         std::vector<SpotLight> g_spot_lights;
@@ -92,19 +105,20 @@ namespace application {
         };
 
         ModelData g_object;
+        ModelData g_light_boxes[MAX_LIGHTS * 2];
+        ModelData g_spot_cones[MAX_LIGHTS];
 
-        // Camera State
+        // Камера
         float g_cam_yaw = 0.0f;
         float g_cam_pitch = 0.0f;
         float g_cam_radius = 5.0f;
         float g_fov = 60.0f;
 
-        // Visualize Light
         bool g_show_lights = true;
-        ModelData g_light_boxes[MAX_LIGHTS * 2];
-        Buffer g_cube_vertex_buffer{};
-        Buffer g_cube_index_buffer{};
-        uint32_t g_cube_index_count = 0;
+
+        // ==========================================
+        // ГЕНЕРАЦИЯ ГЕОМЕТРИИ
+        // ==========================================
 
         void generateDodecahedron(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices)
         {
@@ -138,7 +152,7 @@ namespace application {
 
             for (auto& v : vertices) {
                 v.position = glm::normalize(v.position) * 1.0f;
-                v.normal = v.position; // Для додекаэдра нормаль = позиция (смотрит от центра)
+                v.normal = v.position;
             }
         }
 
@@ -158,6 +172,40 @@ namespace application {
             };
         }
 
+        void generateConeLines(std::vector<Vertex>& vertices) {
+            vertices.clear();
+            float length = 2.0f;
+            float outerAngle = glm::radians(25.0f);
+            float radius = length * std::tan(outerAngle);
+
+            glm::vec3 apex(0, 0, 0);
+            const int segments = 16; // Количество сегментов в круге
+            std::vector<glm::vec3> circlePoints;
+
+            // Генерируем точки по кругу
+            for (int i = 0; i < segments; ++i) {
+                float angle = (float)i / segments * 2.0f * 3.14159265f;
+                // Конус направлен вдоль оси Z
+                circlePoints.push_back(glm::vec3(radius * std::cos(angle), radius * std::sin(angle), -length));
+            }
+
+            // Линии от вершины к основанию
+            for (int i = 0; i < segments; ++i) {
+                vertices.push_back({ apex, {} });
+                vertices.push_back({ circlePoints[i], {} });
+            }
+
+            // Линии по кругу основания
+            for (int i = 0; i < segments; ++i) {
+                vertices.push_back({ circlePoints[i], {} });
+                vertices.push_back({ circlePoints[(i + 1) % segments], {} });
+            }
+        }
+
+        // ==========================================
+        // ОБНОВЛЕНИЕ ДАННЫХ
+        // ==========================================
+
         void updateSceneUniforms() {
             g_scene_data.cameraPos = glm::vec4(g_cam_radius * cos(glm::radians(g_cam_pitch)) * sin(glm::radians(g_cam_yaw)),
                 g_cam_radius * sin(glm::radians(g_cam_pitch)),
@@ -167,13 +215,11 @@ namespace application {
 
             float aspect = (float)graphics::internal::context.swapchain_extent.width / (float)graphics::internal::context.swapchain_extent.height;
             g_scene_data.proj = glm::perspective(glm::radians(g_fov), aspect, 0.1f, 100.0f);
-            g_scene_data.proj[1][1] *= -1.0f; // Vulkan Y-flip
+            g_scene_data.proj[1][1] *= -1.0f;
 
             std::memcpy(g_scene_ubo.mapped, &g_scene_data, sizeof(SceneUBO));
 
-            // Обновляем SSBO для света
             if (g_point_lights.size() < MAX_LIGHTS) {
-                // Записываем количество в 0-й элемент (хитрость)
                 g_point_lights[0].position.w = (float)g_point_lights.size() - 1;
                 std::memcpy(g_point_ssbo.mapped, g_point_lights.data(), sizeof(PointLight) * MAX_LIGHTS);
             }
@@ -208,56 +254,88 @@ namespace application {
             updateSceneUniforms();
             updateModelUniform(g_object);
 
-            // Обновляем кубики для света
             int boxIdx = 0;
             for (size_t i = 1; i < g_point_lights.size() && boxIdx < MAX_LIGHTS * 2; ++i) {
                 g_light_boxes[boxIdx].position = glm::vec3(g_point_lights[i].position);
-                g_light_boxes[boxIdx].scale = glm::vec3(1.0f);
                 updateModelUniform(g_light_boxes[boxIdx], g_point_lights[i].color);
                 boxIdx++;
             }
+            int coneIdx = 0;
             for (size_t i = 1; i < g_spot_lights.size() && boxIdx < MAX_LIGHTS * 2; ++i) {
                 g_light_boxes[boxIdx].position = glm::vec3(g_spot_lights[i].position);
-                g_light_boxes[boxIdx].scale = glm::vec3(1.0f);
                 updateModelUniform(g_light_boxes[boxIdx], g_spot_lights[i].color);
                 boxIdx++;
+
+                // Конус
+                g_spot_cones[coneIdx].position = glm::vec3(g_spot_lights[i].position);
+                g_spot_cones[coneIdx].scale = glm::vec3(1.0f);
+
+                // Вектор направления света (нормализованный)
+                glm::vec3 dir = glm::normalize(glm::vec3(g_spot_lights[i].direction));
+
+                // Математически точная матрица, которая поворачивает ось -Z (куда смотрит наш конус) 
+                // ровно в сторону вектора dir.
+                glm::mat4 rotMatrix = glm::mat4(1.0f);
+                if (glm::length(dir) > 0.0f) {
+                    glm::vec3 zAxis = -dir;
+                    glm::vec3 up = (std::abs(zAxis.y) > 0.99f) ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+                    glm::vec3 xAxis = glm::normalize(glm::cross(up, zAxis));
+                    glm::vec3 yAxis = glm::cross(zAxis, xAxis);
+
+                    rotMatrix[0] = glm::vec4(xAxis, 0.0f);
+                    rotMatrix[1] = glm::vec4(yAxis, 0.0f);
+                    rotMatrix[2] = glm::vec4(zAxis, 0.0f);
+                    rotMatrix[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+                }
+
+                g_spot_cones[coneIdx].ubo.model = glm::translate(glm::mat4(1.0f), g_spot_cones[coneIdx].position) * rotMatrix;
+                g_spot_cones[coneIdx].ubo.albedo = glm::vec4(1.0f); // Белый цвет
+                g_spot_cones[coneIdx].ubo.specColor = glm::vec4(0.0f);
+                g_spot_cones[coneIdx].ubo.specParams = glm::vec4(1.0f);
+
+                std::memcpy(g_spot_cones[coneIdx].ubo_buffer.mapped, &g_spot_cones[coneIdx].ubo, sizeof(ModelUBO));
+
+                coneIdx++;
             }
         }
 
     } // namespace
 
-    // ============================================================
+    // ==========================================
+    // ИНИЦИАЛИЗАЦИЯ И ОТРИСОВКА
+    // ==========================================
+
     bool initialize()
     {
-        // Setup Default lights
         PointLight defPoint{};
-        defPoint.params = glm::vec4(1.0f, 0.14f, 0.07f, 1.0f); // constant, linear, quadratic
-        g_point_lights.push_back(defPoint); // 0-й элемент - заглушка для счетчика
+        defPoint.params = glm::vec4(1.0f, 0.14f, 0.07f, 1.0f);
+        g_point_lights.push_back(defPoint);
 
         SpotLight defSpot{};
         defSpot.params = glm::vec4(1.0f, 0.14f, 0.07f, cos(glm::radians(12.5f)));
         defSpot.params2 = glm::vec4(cos(glm::radians(25.0f)), 0.0f, 0.0f, 0.0f);
         g_spot_lights.push_back(defSpot);
 
-        // Default scene
         g_scene_data.ambientColor = glm::vec4(0.1f, 0.1f, 0.1f, 1.0f);
         g_scene_data.dirLightDir = glm::vec4(-0.5f, -1.0f, -0.3f, 0.0f);
         g_scene_data.dirLightColor = glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
 
-        // Geometry
-        std::vector<Vertex> vertices, cubeVerts;
+        std::vector<Vertex> vertices, cubeVerts, lineVerts;
         std::vector<uint32_t> indices, cubeIndices;
         generateDodecahedron(vertices, indices);
         generateCube(cubeVerts, cubeIndices);
+        generateConeLines(lineVerts);
+
         g_index_count = static_cast<uint32_t>(indices.size());
         g_cube_index_count = static_cast<uint32_t>(cubeIndices.size());
+        g_line_vertex_count = static_cast<uint32_t>(lineVerts.size());
 
         g_vertex_buffer = graphics::createBuffer(vertices.size() * sizeof(Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, false, vertices.data());
         g_index_buffer = graphics::createBuffer(indices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, false, indices.data());
         g_cube_vertex_buffer = graphics::createBuffer(cubeVerts.size() * sizeof(Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, false, cubeVerts.data());
         g_cube_index_buffer = graphics::createBuffer(cubeIndices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, false, cubeIndices.data());
+        g_line_vertex_buffer = graphics::createBuffer(lineVerts.size() * sizeof(Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, false, lineVerts.data());
 
-        // Buffers
         g_scene_ubo = graphics::createBuffer(sizeof(SceneUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, true);
         g_point_ssbo = graphics::createBuffer(sizeof(PointLight) * MAX_LIGHTS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, true);
         g_spot_ssbo = graphics::createBuffer(sizeof(SpotLight) * MAX_LIGHTS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, true);
@@ -266,19 +344,19 @@ namespace application {
         for (int i = 0; i < MAX_LIGHTS * 2; ++i) {
             g_light_boxes[i].ubo_buffer = graphics::createBuffer(sizeof(ModelUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, true);
         }
+        for (int i = 0; i < MAX_LIGHTS; ++i) {
+            g_spot_cones[i].ubo_buffer = graphics::createBuffer(sizeof(ModelUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, true);
+        }
 
-        // Descriptors
         g_scene_layout = graphics::createSceneSetLayout();
         g_model_layout = graphics::createModelSetLayout();
-        g_descriptor_pool = graphics::createDescriptorPool(MAX_LIGHTS * 3); // запас
+        g_descriptor_pool = graphics::createDescriptorPool(MAX_LIGHTS * 4);
 
         g_scene_set = graphics::allocateDescriptorSet(g_descriptor_pool, g_scene_layout);
         g_object.set = graphics::allocateDescriptorSet(g_descriptor_pool, g_model_layout);
-        for (int i = 0; i < MAX_LIGHTS * 2; ++i) {
-            g_light_boxes[i].set = graphics::allocateDescriptorSet(g_descriptor_pool, g_model_layout);
-        }
+        for (int i = 0; i < MAX_LIGHTS * 2; ++i) g_light_boxes[i].set = graphics::allocateDescriptorSet(g_descriptor_pool, g_model_layout);
+        for (int i = 0; i < MAX_LIGHTS; ++i) g_spot_cones[i].set = graphics::allocateDescriptorSet(g_descriptor_pool, g_model_layout);
 
-        // Write Descriptors
         VkDescriptorBufferInfo scene_info{ g_scene_ubo.buffer, 0, VK_WHOLE_SIZE };
         VkDescriptorBufferInfo point_info{ g_point_ssbo.buffer, 0, VK_WHOLE_SIZE };
         VkDescriptorBufferInfo spot_info{ g_spot_ssbo.buffer, 0, VK_WHOLE_SIZE };
@@ -297,34 +375,38 @@ namespace application {
             };
         writeModelSet(g_object.set, g_object.ubo_buffer);
         for (int i = 0; i < MAX_LIGHTS * 2; ++i) writeModelSet(g_light_boxes[i].set, g_light_boxes[i].ubo_buffer);
+        for (int i = 0; i < MAX_LIGHTS; ++i) writeModelSet(g_spot_cones[i].set, g_spot_cones[i].ubo_buffer);
 
-        // Pipelines
-        g_object_pipeline_layout = graphics::createPipelineLayout(g_model_layout); // Пайплайн лайаут не знает про два сета :( Нужно изменить.
-        // ЖДЕМ: мы поменяли graphics.cpp, там VkPipelineLayoutCreateInfo должен брать массив.
-        // (В коде ниже я поправил вызов, но для этого нужно обновить graphics.hpp/cpp, чтобы они принимали массив)
         VkDescriptorSetLayout layouts[] = { g_scene_layout, g_model_layout };
         VkPipelineLayoutCreateInfo pl_info{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
         pl_info.setLayoutCount = 2;
         pl_info.pSetLayouts = layouts;
         vkCreatePipelineLayout(graphics::internal::context.device, &pl_info, nullptr, &g_object_pipeline_layout);
         vkCreatePipelineLayout(graphics::internal::context.device, &pl_info, nullptr, &g_simple_pipeline_layout);
+        vkCreatePipelineLayout(graphics::internal::context.device, &pl_info, nullptr, &g_line_pipeline_layout);
 
         VkShaderModule vert = graphics::loadShaderModule("shaders/object.vert.spv");
         VkShaderModule frag = graphics::loadShaderModule("shaders/object.frag.spv");
         VkVertexInputBindingDescription binding{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX };
         std::vector<VkVertexInputAttributeDescription> attrs = { { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) }, { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) } };
-        g_object_pipeline = graphics::createGraphicsPipeline(graphics::internal::context.render_pass, g_object_pipeline_layout, vert, frag, binding, attrs);
+
+        // Передаем 7 аргументов (с топологией)
+        g_object_pipeline = graphics::createGraphicsPipeline(graphics::internal::context.render_pass, g_object_pipeline_layout, vert, frag, binding, attrs, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
         graphics::destroyShaderModule(vert); graphics::destroyShaderModule(frag);
 
         vert = graphics::loadShaderModule("shaders/simple.vert.spv");
         frag = graphics::loadShaderModule("shaders/simple.frag.spv");
-        g_simple_pipeline = graphics::createGraphicsPipeline(graphics::internal::context.render_pass, g_simple_pipeline_layout, vert, frag, binding, attrs);
+        g_simple_pipeline = graphics::createGraphicsPipeline(graphics::internal::context.render_pass, g_simple_pipeline_layout, vert, frag, binding, attrs, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+        graphics::destroyShaderModule(vert); graphics::destroyShaderModule(frag);
+
+        vert = graphics::loadShaderModule("shaders/lines.vert.spv");
+        frag = graphics::loadShaderModule("shaders/lines.frag.spv");
+        g_line_pipeline = graphics::createGraphicsPipeline(graphics::internal::context.render_pass, g_line_pipeline_layout, vert, frag, binding, attrs, VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
         graphics::destroyShaderModule(vert); graphics::destroyShaderModule(frag);
 
         return g_object_pipeline != VK_NULL_HANDLE;
     }
 
-    // ============================================================
     void shutdown()
     {
         auto& context = graphics::internal::context;
@@ -332,29 +414,25 @@ namespace application {
 
         if (g_object_pipeline) vkDestroyPipeline(context.device, g_object_pipeline, nullptr);
         if (g_simple_pipeline) vkDestroyPipeline(context.device, g_simple_pipeline, nullptr);
+        if (g_line_pipeline) vkDestroyPipeline(context.device, g_line_pipeline, nullptr);
         if (g_object_pipeline_layout) vkDestroyPipelineLayout(context.device, g_object_pipeline_layout, nullptr);
         if (g_simple_pipeline_layout) vkDestroyPipelineLayout(context.device, g_simple_pipeline_layout, nullptr);
+        if (g_line_pipeline_layout) vkDestroyPipelineLayout(context.device, g_line_pipeline_layout, nullptr);
 
-        graphics::destroyBuffer(g_scene_ubo);
-        graphics::destroyBuffer(g_point_ssbo);
-        graphics::destroyBuffer(g_spot_ssbo);
-
+        graphics::destroyBuffer(g_scene_ubo); graphics::destroyBuffer(g_point_ssbo); graphics::destroyBuffer(g_spot_ssbo);
         graphics::destroyBuffer(g_object.ubo_buffer);
-        for (int i = 0; i < MAX_LIGHTS * 2; ++i) {
-            graphics::destroyBuffer(g_light_boxes[i].ubo_buffer);
-        }
+        for (int i = 0; i < MAX_LIGHTS * 2; ++i) graphics::destroyBuffer(g_light_boxes[i].ubo_buffer);
+        for (int i = 0; i < MAX_LIGHTS; ++i) graphics::destroyBuffer(g_spot_cones[i].ubo_buffer);
 
-        graphics::destroyBuffer(g_cube_index_buffer);
-        graphics::destroyBuffer(g_cube_vertex_buffer);
-        graphics::destroyBuffer(g_index_buffer);
-        graphics::destroyBuffer(g_vertex_buffer);
+        graphics::destroyBuffer(g_line_vertex_buffer);
+        graphics::destroyBuffer(g_cube_index_buffer); graphics::destroyBuffer(g_cube_vertex_buffer);
+        graphics::destroyBuffer(g_index_buffer); graphics::destroyBuffer(g_vertex_buffer);
 
         if (g_descriptor_pool) vkDestroyDescriptorPool(context.device, g_descriptor_pool, nullptr);
         if (g_model_layout) vkDestroyDescriptorSetLayout(context.device, g_model_layout, nullptr);
         if (g_scene_layout) vkDestroyDescriptorSetLayout(context.device, g_scene_layout, nullptr);
     }
 
-    // ============================================================
     void update(double time)
     {
         if (ImGui::Begin("Lab 2 - Camera & Lighting")) {
@@ -417,7 +495,6 @@ namespace application {
         ImGui::End();
     }
 
-    // ============================================================
     void render(const graphics::internal::FrameData& fd)
     {
         auto& context = graphics::internal::context;
@@ -428,16 +505,11 @@ namespace application {
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(fd.command_buffer, &begin);
 
-        VkClearValue clear_values[] = {
-            {.color = {{0.1f, 0.1f, 0.12f, 1.0f}} },
-            {.depthStencil = {1.0f, 0} }
-        };
+        VkClearValue clear_values[] = { {.color = {{0.1f, 0.1f, 0.12f, 1.0f}} }, {.depthStencil = {1.0f, 0} } };
         VkRenderPassBeginInfo rp{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-        rp.renderPass = context.render_pass;
-        rp.framebuffer = fd.framebuffer;
+        rp.renderPass = context.render_pass; rp.framebuffer = fd.framebuffer;
         rp.renderArea = { {0,0}, context.swapchain_extent };
-        rp.clearValueCount = 2;
-        rp.pClearValues = clear_values;
+        rp.clearValueCount = 2; rp.pClearValues = clear_values;
         vkCmdBeginRenderPass(fd.command_buffer, &rp, VK_SUBPASS_CONTENTS_INLINE);
 
         VkViewport viewport{ 0, 0, (float)context.swapchain_extent.width, (float)context.swapchain_extent.height, 0, 1 };
@@ -445,35 +517,45 @@ namespace application {
         vkCmdSetViewport(fd.command_buffer, 0, 1, &viewport);
         vkCmdSetScissor(fd.command_buffer, 0, 1, &scissor);
 
-        // 1. Рисуем додекаэдр (с Блинн-Фонгом)
+        VkDeviceSize offset = 0;
+
+        // 1. Рисуем додекаэдр
         vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_object_pipeline);
         vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_object_pipeline_layout, 0, 1, &g_scene_set, 0, nullptr);
         vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_object_pipeline_layout, 1, 1, &g_object.set, 0, nullptr);
-
-        VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &g_vertex_buffer.buffer, &offset);
         vkCmdBindIndexBuffer(fd.command_buffer, g_index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(fd.command_buffer, g_index_count, 1, 0, 0, 0);
 
-        // 2. Рисуем светящиеся кубики (Визуализация источников)
         if (g_show_lights) {
+            // 2. Кубики
             vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_simple_pipeline);
             vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_simple_pipeline_layout, 0, 1, &g_scene_set, 0, nullptr);
             vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &g_cube_vertex_buffer.buffer, &offset);
             vkCmdBindIndexBuffer(fd.command_buffer, g_cube_index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
             int boxIdx = 0;
-            // Кубики для точечных источников
             for (size_t i = 1; i < g_point_lights.size(); ++i) {
                 vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_simple_pipeline_layout, 1, 1, &g_light_boxes[boxIdx].set, 0, nullptr);
                 vkCmdDrawIndexed(fd.command_buffer, g_cube_index_count, 1, 0, 0, 0);
                 boxIdx++;
             }
-            // Кубики для прожекторов
             for (size_t i = 1; i < g_spot_lights.size(); ++i) {
                 vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_simple_pipeline_layout, 1, 1, &g_light_boxes[boxIdx].set, 0, nullptr);
                 vkCmdDrawIndexed(fd.command_buffer, g_cube_index_count, 1, 0, 0, 0);
                 boxIdx++;
+            }
+
+            // 3. Конусы (Линии)
+            vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_line_pipeline);
+            vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_line_pipeline_layout, 0, 1, &g_scene_set, 0, nullptr);
+            vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &g_line_vertex_buffer.buffer, &offset);
+
+            int coneIdx = 0;
+            for (size_t i = 1; i < g_spot_lights.size(); ++i) {
+                vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_line_pipeline_layout, 1, 1, &g_spot_cones[coneIdx].set, 0, nullptr);
+                vkCmdDraw(fd.command_buffer, g_line_vertex_count, 1, 0, 0); // Рисуем линии!
+                coneIdx++;
             }
         }
 

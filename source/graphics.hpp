@@ -28,13 +28,14 @@ namespace graphics {
     void           destroyShaderModule(VkShaderModule m);
 
     VkPipelineLayout createPipelineLayout(VkDescriptorSetLayout set_layout);
-    VkPipeline       createGraphicsPipeline(
+    VkPipeline createGraphicsPipeline(
         VkRenderPass           render_pass,
         VkPipelineLayout       layout,
         VkShaderModule         vert_shader,
         VkShaderModule         frag_shader,
         VkVertexInputBindingDescription                binding,
-        const std::vector<VkVertexInputAttributeDescription>& attributes);
+        const std::vector<VkVertexInputAttributeDescription>& attributes,
+        VkPrimitiveTopology    topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
     // Создаем лайаут для двух сетов: Scene (0) и Model (1)
     VkDescriptorSetLayout createSceneSetLayout();

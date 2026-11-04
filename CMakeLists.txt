@@ -77,6 +77,8 @@ if(Vulkan_GLSLC_EXECUTABLE)
 	compile_shader(object.frag)
 	compile_shader(simple.vert)
 	compile_shader(simple.frag)
+	compile_shader(lines.vert)   
+	compile_shader(lines.frag)
 
 	add_custom_target(shaders DEPENDS ${_SHADER_BINARIES})
 	add_dependencies(${PROJECT_NAME} shaders)
