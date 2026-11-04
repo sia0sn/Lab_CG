@@ -10,13 +10,8 @@ namespace graphics {
     std::string findShaderPath(const std::string& filename)
     {
         const std::vector<std::string> candidates = {
-            filename,
-            "../" + filename,
-            "../../" + filename,
-            "../../../" + filename,
-            "shaders/" + filename,
-            "../shaders/" + filename,
-            "../../shaders/" + filename,
+            filename, "../" + filename, "../../" + filename, "../../../" + filename,
+            "shaders/" + filename, "../shaders/" + filename, "../../shaders/" + filename,
         };
         for (const auto& path : candidates) {
             std::ifstream f(path, std::ios::binary);
@@ -25,11 +20,7 @@ namespace graphics {
         return filename;
     }
 
-    Buffer createBuffer(VkDeviceSize size,
-        VkBufferUsageFlags usage,
-        VmaMemoryUsage memory_usage,
-        bool persistent_map,
-        const void* data)
+    Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memory_usage, bool persistent_map, const void* data)
     {
         VkBufferCreateInfo buffer_info{};
         buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -39,23 +30,16 @@ namespace graphics {
 
         VmaAllocationCreateInfo alloc_info{};
         alloc_info.usage = memory_usage;
-        alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-            VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
         Buffer result;
-        if (vmaCreateBuffer(internal::context.allocator, &buffer_info, &alloc_info,
-            &result.buffer, &result.allocation, &result.info) != VK_SUCCESS) {
+        if (vmaCreateBuffer(internal::context.allocator, &buffer_info, &alloc_info, &result.buffer, &result.allocation, &result.info) != VK_SUCCESS) {
             std::cerr << "[graphics] Failed to create buffer\n";
             return {};
         }
 
-        if (persistent_map) {
-            result.mapped = result.info.pMappedData;
-        }
-
-        if (data && result.info.pMappedData) {
-            std::memcpy(result.info.pMappedData, data, static_cast<size_t>(size));
-        }
+        if (persistent_map) result.mapped = result.info.pMappedData;
+        if (data && result.info.pMappedData) std::memcpy(result.info.pMappedData, data, static_cast<size_t>(size));
 
         return result;
     }
@@ -98,25 +82,22 @@ namespace graphics {
         if (m) vkDestroyShaderModule(internal::context.device, m, nullptr);
     }
 
-    VkPipelineLayout createPipelineLayout(VkDescriptorSetLayout set_layout)
-    {
+    VkPipelineLayout createPipelineLayout(VkDescriptorSetLayout set_layout) {
+        // Она больше не используется напрямую в application.cpp, 
+        // так как мы создаем layout вручную для двух сетов.
+        // Но чтобы код собрался, оставим её.
         VkPipelineLayoutCreateInfo info{};
         info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         info.setLayoutCount = 1;
         info.pSetLayouts = &set_layout;
-
         VkPipelineLayout layout = VK_NULL_HANDLE;
         vkCreatePipelineLayout(internal::context.device, &info, nullptr, &layout);
         return layout;
     }
 
-    VkPipeline createGraphicsPipeline(
-        VkRenderPass render_pass,
-        VkPipelineLayout layout,
-        VkShaderModule vert_shader,
-        VkShaderModule frag_shader,
-        VkVertexInputBindingDescription binding,
-        const std::vector<VkVertexInputAttributeDescription>& attributes)
+
+
+    VkPipeline createGraphicsPipeline(VkRenderPass render_pass, VkPipelineLayout layout, VkShaderModule vert_shader, VkShaderModule frag_shader, VkVertexInputBindingDescription binding, const std::vector<VkVertexInputAttributeDescription>& attributes)
     {
         VkPipelineShaderStageCreateInfo stages[2]{};
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -162,9 +143,7 @@ namespace graphics {
         depth.depthCompareOp = VK_COMPARE_OP_LESS;
 
         VkPipelineColorBlendAttachmentState blend_attachment{};
-        blend_attachment.colorWriteMask =
-            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
         blend_attachment.blendEnable = VK_FALSE;
 
         VkPipelineColorBlendStateCreateInfo blend{};
@@ -195,25 +174,53 @@ namespace graphics {
         info.subpass = 0;
 
         VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vkCreateGraphicsPipelines(internal::context.device, VK_NULL_HANDLE,
-            1, &info, nullptr, &pipeline) != VK_SUCCESS) {
+        if (vkCreateGraphicsPipelines(internal::context.device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline) != VK_SUCCESS) {
             std::cerr << "[graphics] Failed to create graphics pipeline\n";
         }
         return pipeline;
     }
 
-    VkDescriptorSetLayout createDescriptorSetLayout()
+    VkDescriptorSetLayout createSceneSetLayout()
     {
-        VkDescriptorSetLayoutBinding ubo{};
-        ubo.binding = 0;
-        ubo.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        ubo.descriptorCount = 1;
-        ubo.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutBinding bindings[3]{};
+        // 0: Scene UBO
+        bindings[0].binding = 0;
+        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        // 1: Point Lights SSBO
+        bindings[1].binding = 1;
+        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        // 2: Spot Lights SSBO
+        bindings[2].binding = 2;
+        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[2].descriptorCount = 1;
+        bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        info.bindingCount = 3;
+        info.pBindings = bindings;
+
+        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+        vkCreateDescriptorSetLayout(internal::context.device, &info, nullptr, &layout);
+        return layout;
+    }
+
+    VkDescriptorSetLayout createModelSetLayout()
+    {
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding = 0;
+        binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        binding.descriptorCount = 1;
+        binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
         VkDescriptorSetLayoutCreateInfo info{};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         info.bindingCount = 1;
-        info.pBindings = &ubo;
+        info.pBindings = &binding;
 
         VkDescriptorSetLayout layout = VK_NULL_HANDLE;
         vkCreateDescriptorSetLayout(internal::context.device, &info, nullptr, &layout);
@@ -223,13 +230,14 @@ namespace graphics {
     VkDescriptorPool createDescriptorPool(uint32_t max_sets)
     {
         VkDescriptorPoolSize sizes[] = {
-            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, max_sets },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, max_sets * 2 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, max_sets * 2 },
         };
 
         VkDescriptorPoolCreateInfo info{};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        info.maxSets = max_sets;
-        info.poolSizeCount = 1;
+        info.maxSets = max_sets * 2; // Scene + Model
+        info.poolSizeCount = 2;
         info.pPoolSizes = sizes;
 
         VkDescriptorPool pool = VK_NULL_HANDLE;

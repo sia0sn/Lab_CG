@@ -16,7 +16,6 @@ elseif(APPLE)
 elseif(WIN32)
 	if(MSVC)
 		target_compile_options(${PROJECT_NAME} PRIVATE /W4 /wd4201)
-		# /subsystem:console — чтобы видеть ошибки при отладке
 		target_link_options(${PROJECT_NAME} PRIVATE /subsystem:console)
 	else()
 		target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
@@ -28,39 +27,13 @@ else()
 endif()
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD_REQUIRED TRUE CXX_STANDARD 20)
 
-target_compile_definitions(${PROJECT_NAME} PRIVATE
-	GLM_FORCE_RADIANS
-	GLM_FORCE_DEPTH_ZERO_TO_ONE)
+target_compile_definitions(${PROJECT_NAME} PRIVATE GLM_FORCE_RADIANS GLM_FORCE_DEPTH_ZERO_TO_ONE)
 
-FetchContent_Declare(
-	glfw
-	GIT_REPOSITORY https://github.com/glfw/glfw.git
-	GIT_TAG 3.5.1
-)
-
-FetchContent_Declare(
-	vk-bootstrap
-	GIT_REPOSITORY https://github.com/charles-lunarg/vk-bootstrap.git
-	GIT_TAG v1.4.321
-)
-
-FetchContent_Declare(
-	VulkanMemoryAllocator
-	GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
-	GIT_TAG v3.4.0
-)
-
-FetchContent_Declare(
-	imgui
-	GIT_REPOSITORY https://github.com/ocornut/imgui.git
-	GIT_TAG v1.92.9
-)
-
-FetchContent_Declare(
-	glm
-	GIT_REPOSITORY https://github.com/g-truc/glm.git
-	GIT_TAG 1.0.1
-)
+FetchContent_Declare(glfw GIT_REPOSITORY https://github.com/glfw/glfw.git GIT_TAG 3.5.1)
+FetchContent_Declare(vk-bootstrap GIT_REPOSITORY https://github.com/charles-lunarg/vk-bootstrap.git GIT_TAG v1.4.321)
+FetchContent_Declare(VulkanMemoryAllocator GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git GIT_TAG v3.4.0)
+FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.92.9)
+FetchContent_Declare(glm GIT_REPOSITORY https://github.com/g-truc/glm.git GIT_TAG 1.0.1)
 
 find_package(Vulkan REQUIRED)
 
@@ -69,21 +42,9 @@ set(GLFW_BUILD_EXAMPLES OFF)
 set(GLFW_BUILD_TESTS OFF)
 set(GLFW_BUILD_DOCS OFF)
 
-FetchContent_MakeAvailable(
-	glfw
-	vk-bootstrap
-	VulkanMemoryAllocator
-	imgui
-	glm
-)
+FetchContent_MakeAvailable(glfw vk-bootstrap VulkanMemoryAllocator imgui glm)
 
-target_link_libraries(${PROJECT_NAME} PRIVATE
-	glfw
-	Vulkan::Vulkan
-	vk-bootstrap::vk-bootstrap
-	GPUOpen::VulkanMemoryAllocator
-	glm::glm
-)
+target_link_libraries(${PROJECT_NAME} PRIVATE glfw Vulkan::Vulkan vk-bootstrap::vk-bootstrap GPUOpen::VulkanMemoryAllocator glm::glm)
 target_include_directories(${PROJECT_NAME} PRIVATE ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
 target_sources(${PROJECT_NAME} PRIVATE
 	${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
@@ -97,15 +58,11 @@ target_sources(${PROJECT_NAME} PRIVATE
 
 # Compile shaders
 if(Vulkan_GLSLC_EXECUTABLE)
-	message(STATUS "Using glslc: ${Vulkan_GLSLC_EXECUTABLE}")
-
 	set(_SHADER_BINARIES)
-
 	macro(compile_shader SHADER_FILE)
 		set(SHADER_SOURCE ${CMAKE_SOURCE_DIR}/shaders/${SHADER_FILE})
 		set(SHADER_BINARY ${SHADER_FILE}.spv)
 		set(SHADER_BINARY_PATH ${CMAKE_SOURCE_DIR}/shaders/${SHADER_BINARY})
-
 		add_custom_command(
 			OUTPUT ${SHADER_BINARY_PATH}
 			COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${SHADER_SOURCE} -o ${SHADER_BINARY_PATH}
@@ -118,9 +75,11 @@ if(Vulkan_GLSLC_EXECUTABLE)
 
 	compile_shader(object.vert)
 	compile_shader(object.frag)
+	compile_shader(simple.vert)
+	compile_shader(simple.frag)
 
 	add_custom_target(shaders DEPENDS ${_SHADER_BINARIES})
 	add_dependencies(${PROJECT_NAME} shaders)
 else()
-	message(FATAL_ERROR "glslc not found via find_package(Vulkan)")
+	message(FATAL_ERROR "glslc not found")
 endif()

@@ -36,13 +36,14 @@ namespace graphics {
         VkVertexInputBindingDescription                binding,
         const std::vector<VkVertexInputAttributeDescription>& attributes);
 
-    VkDescriptorSetLayout createDescriptorSetLayout();
+    // Создаем лайаут для двух сетов: Scene (0) и Model (1)
+    VkDescriptorSetLayout createSceneSetLayout();
+    VkDescriptorSetLayout createModelSetLayout();
+
     VkDescriptorPool      createDescriptorPool(uint32_t max_sets);
     VkDescriptorSet       allocateDescriptorSet(VkDescriptorPool      pool,
         VkDescriptorSetLayout layout);
 
-    // Ищет файл (например "shaders/object.vert.spv") в нескольких
-    // возможных рабочих директориях. Возвращает первый найденный путь.
     std::string findShaderPath(const std::string& filename);
 
 } // namespace graphics
