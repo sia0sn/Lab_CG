@@ -5,6 +5,7 @@
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <GLFW/glfw3.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -15,7 +16,6 @@
 #include <iostream>
 #include <vector>
 #include <fstream>
-#include <GLFW/glfw3.h>
 
 namespace application {
 
@@ -26,7 +26,7 @@ namespace application {
         struct Vertex {
             glm::vec3 position;
             glm::vec3 normal;
-            glm::vec2 uv; // Текстурные координаты
+            glm::vec2 uv;
         };
 
         struct alignas(16) SceneUBO {
@@ -59,7 +59,6 @@ namespace application {
             glm::vec4 params2;
         };
 
-        // Структура для текстуры
         struct Texture {
             VkImage image = VK_NULL_HANDLE;
             VmaAllocation allocation = VK_NULL_HANDLE;
@@ -71,7 +70,6 @@ namespace application {
         VkDescriptorSetLayout g_scene_layout = VK_NULL_HANDLE;
         VkDescriptorSetLayout g_model_layout = VK_NULL_HANDLE;
         VkDescriptorSetLayout g_texture_layout = VK_NULL_HANDLE;
-        VkDescriptorSet       g_object_texture_set = VK_NULL_HANDLE;
         VkPipelineLayout      g_object_pipeline_layout = VK_NULL_HANDLE;
         VkPipelineLayout      g_simple_pipeline_layout = VK_NULL_HANDLE;
         VkPipelineLayout      g_line_pipeline_layout = VK_NULL_HANDLE;
@@ -81,6 +79,7 @@ namespace application {
         VkDescriptorPool      g_descriptor_pool = VK_NULL_HANDLE;
 
         constexpr int MAX_LIGHTS = 10;
+        constexpr int NUM_ALBEDO_TEXTURES = 3;
 
         Buffer g_vertex_buffer{};
         Buffer g_index_buffer{};
@@ -98,6 +97,10 @@ namespace application {
         Buffer g_spot_ssbo{};
         VkDescriptorSet g_scene_set = VK_NULL_HANDLE;
 
+        Texture g_albedo_textures[NUM_ALBEDO_TEXTURES];
+        Texture g_specular_texture;
+        Texture g_emissive_texture;
+
         SceneUBO g_scene_data{};
         std::vector<PointLight> g_point_lights;
         std::vector<SpotLight> g_spot_lights;
@@ -105,24 +108,33 @@ namespace application {
         struct ModelData {
             ModelUBO ubo;
             Buffer ubo_buffer;
-            VkDescriptorSet set;
+            VkDescriptorSet model_set;
+            VkDescriptorSet texture_set; // Свой набор текстур для каждого объекта
+
             glm::vec3 position{ 0.0f };
             glm::vec3 rotation{ 0.0f };
             glm::vec3 scale{ 1.0f };
+
+            // Свойства материала
             glm::vec4 albedo{ 0.8f, 0.8f, 0.8f, 1.0f };
             glm::vec4 specColor{ 1.0f, 1.0f, 1.0f, 1.0f };
             float shininess = 128.0f;
+
+            // Анимация и текстуры
+            bool visible = true;
+            bool animate = false;
+            float anim_speed = 1.0f;
+            float anim_radius = 2.0f;
+            float anim_phase = 0.0f;
+
+            int current_albedo_index = 0;
+            bool enable_emissive = true;
+            bool enable_specular = true;
         };
 
-        ModelData g_object;
+        ModelData g_objects[2]; // Два объекта!
         ModelData g_light_boxes[MAX_LIGHTS * 2];
         ModelData g_spot_cones[MAX_LIGHTS];
-
-        // Текстуры
-        constexpr int NUM_ALBEDO_TEXTURES = 3;
-        Texture g_albedo_textures[NUM_ALBEDO_TEXTURES];
-        Texture g_specular_texture;
-        Texture g_emissive_texture;
 
         // Камера
         float g_cam_yaw = 0.0f;
@@ -131,9 +143,6 @@ namespace application {
         float g_fov = 60.0f;
 
         bool g_show_lights = true;
-        bool g_show_emissive = true;
-        bool g_show_specular = true;
-        int g_current_albedo_index = 0; // Текущая выбранная текстура (0, 1 или 2)
 
         // ==========================================
         // ГЕНЕРАЦИЯ ГЕОМЕТРИИ
@@ -172,22 +181,19 @@ namespace application {
             for (auto& v : vertices) {
                 v.position = glm::normalize(v.position) * 1.0f;
                 v.normal = v.position;
-
-                // Генерируем UV координаты
-                v.uv.x = atan2(v.position.z, v.position.x) / (2.0f * 3.14159f) + 0.5f;
-                v.uv.y = asin(v.position.y) / 3.14159f + 0.5f;
+                v.uv = glm::vec2(v.normal.x * 0.5 + 0.5, 1.0 - (v.normal.y * 0.5 + 0.5));
             }
         }
 
         void generateCube(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
             float s = 0.1f;
             vertices = {
-                {{-s,-s,-s}, {0,0,-1}}, {{-s, s,-s}, {0,0,-1}}, {{ s, s,-s}, {0,0,-1}}, {{ s,-s,-s}, {0,0,-1}},
-                {{-s,-s, s}, {0,0, 1}}, {{ s,-s, s}, {0,0, 1}}, {{ s, s, s}, {0,0, 1}}, {{-s, s, s}, {0,0, 1}},
-                {{-s,-s,-s}, {-1,0,0}}, {{-s,-s, s}, {-1,0,0}}, {{-s, s, s}, {-1,0,0}}, {{-s, s,-s}, {-1,0,0}},
-                {{ s,-s,-s}, { 1,0,0}}, {{ s, s,-s}, { 1,0,0}}, {{ s, s, s}, { 1,0,0}}, {{ s,-s, s}, { 1,0,0}},
-                {{-s, s,-s}, {0, 1,0}}, {{-s, s, s}, {0, 1,0}}, {{ s, s, s}, {0, 1,0}}, {{ s, s,-s}, {0, 1,0}},
-                {{-s,-s,-s}, {0,-1,0}}, {{ s,-s,-s}, {0,-1,0}}, {{ s,-s, s}, {0,-1,0}}, {{-s,-s, s}, {0,-1,0}},
+                {{-s,-s,-s}, {0,0,-1}, {0,0}}, {{-s, s,-s}, {0,0,-1}, {0,0}}, {{ s, s,-s}, {0,0,-1}, {0,0}}, {{ s,-s,-s}, {0,0,-1}, {0,0}},
+                {{-s,-s, s}, {0,0, 1}, {0,0}}, {{ s,-s, s}, {0,0, 1}, {0,0}}, {{ s, s, s}, {0,0, 1}, {0,0}}, {{-s, s, s}, {0,0, 1}, {0,0}},
+                {{-s,-s,-s}, {-1,0,0}, {0,0}}, {{-s,-s, s}, {-1,0,0}, {0,0}}, {{-s, s, s}, {-1,0,0}, {0,0}}, {{-s, s,-s}, {-1,0,0}, {0,0}},
+                {{ s,-s,-s}, { 1,0,0}, {0,0}}, {{ s, s,-s}, { 1,0,0}, {0,0}}, {{ s, s, s}, { 1,0,0}, {0,0}}, {{ s,-s, s}, { 1,0,0}, {0,0}},
+                {{-s, s,-s}, {0, 1,0}, {0,0}}, {{-s, s, s}, {0, 1,0}, {0,0}}, {{ s, s, s}, {0, 1,0}, {0,0}}, {{ s, s,-s}, {0, 1,0}, {0,0}},
+                {{-s,-s,-s}, {0,-1,0}, {0,0}}, {{ s,-s,-s}, {0,-1,0}, {0,0}}, {{ s,-s, s}, {0,-1,0}, {0,0}}, {{-s,-s, s}, {0,-1,0}, {0,0}},
             };
             indices = {
                 0,1,2, 2,3,0,    4,5,6, 6,7,4,    8,9,10, 10,11,8,
@@ -227,23 +233,13 @@ namespace application {
 
         Texture createTexture(const char* filename) {
             Texture tex;
-
-            // 1. Ищем файл в разных папках (чтобы работало и из build-debug, и из корня)
             std::string real_path = filename;
-            std::vector<std::string> candidates = {
-                filename,
-                "../" + std::string(filename),
-                "../../" + std::string(filename)
-            };
+            std::vector<std::string> candidates = { filename, "../" + std::string(filename), "../../" + std::string(filename) };
             for (const auto& path : candidates) {
                 std::ifstream f(path, std::ios::binary);
-                if (f.good()) {
-                    real_path = path;
-                    break;
-                }
+                if (f.good()) { real_path = path; break; }
             }
 
-            // 2. Загружаем картинку (только ОДИН раз)
             int texWidth, texHeight, texChannels;
             stbi_uc* pixels = stbi_load(real_path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
             VkDeviceSize imageSize = texWidth * texHeight * 4;
@@ -253,17 +249,9 @@ namespace application {
                 return tex;
             }
 
-            // 3. Создаем Staging Buffer
-            Buffer stagingBuffer = graphics::createBuffer(
-                imageSize,
-                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                VMA_MEMORY_USAGE_AUTO,
-                false,
-                pixels
-            );
-            stbi_image_free(pixels); // Освобождаем память stb_image
+            Buffer stagingBuffer = graphics::createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO, false, pixels);
+            stbi_image_free(pixels);
 
-            // 4. Создаем VkImage
             VkImageCreateInfo imageInfo{};
             imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
             imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -284,54 +272,38 @@ namespace application {
 
             vmaCreateImage(graphics::internal::context.allocator, &imageInfo, &allocInfo, &tex.image, &tex.allocation, nullptr);
 
-            // 5. Копируем данные из Staging в VkImage
-            VkCommandPoolCreateInfo poolInfo{};
-            poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+            VkCommandPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
             poolInfo.queueFamilyIndex = graphics::internal::context.graphics_queue_index;
             VkCommandPool tempPool;
             vkCreateCommandPool(graphics::internal::context.device, &poolInfo, nullptr, &tempPool);
 
-            VkCommandBufferAllocateInfo allocCmd{};
-            allocCmd.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            VkCommandBufferAllocateInfo allocCmd{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
             allocCmd.commandPool = tempPool;
             allocCmd.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
             allocCmd.commandBufferCount = 1;
             VkCommandBuffer cmd;
             vkAllocateCommandBuffers(graphics::internal::context.device, &allocCmd, &cmd);
 
-            VkCommandBufferBeginInfo beginInfo{};
-            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
             beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             vkBeginCommandBuffer(cmd, &beginInfo);
 
-            VkImageMemoryBarrier barrier{};
-            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
             barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
             barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.image = tex.image;
             barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            barrier.subresourceRange.baseMipLevel = 0;
             barrier.subresourceRange.levelCount = 1;
-            barrier.subresourceRange.baseArrayLayer = 0;
             barrier.subresourceRange.layerCount = 1;
-            barrier.srcAccessMask = 0;
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
             VkBufferImageCopy region{};
-            region.bufferOffset = 0;
-            region.bufferRowLength = 0;
-            region.bufferImageHeight = 0;
             region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            region.imageSubresource.mipLevel = 0;
-            region.imageSubresource.baseArrayLayer = 0;
             region.imageSubresource.layerCount = 1;
-            region.imageOffset = { 0, 0, 0 };
             region.imageExtent = { (uint32_t)texWidth, (uint32_t)texHeight, 1 };
-
             vkCmdCopyBufferToImage(cmd, stagingBuffer.buffer, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
             barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -341,42 +313,29 @@ namespace application {
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
             vkEndCommandBuffer(cmd);
-
-            VkSubmitInfo submitInfo{};
-            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            VkSubmitInfo submitInfo{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
             submitInfo.commandBufferCount = 1;
             submitInfo.pCommandBuffers = &cmd;
             vkQueueSubmit(graphics::internal::context.graphics_queue, 1, &submitInfo, VK_NULL_HANDLE);
             vkQueueWaitIdle(graphics::internal::context.graphics_queue);
-
             vkDestroyCommandPool(graphics::internal::context.device, tempPool, nullptr);
             graphics::destroyBuffer(stagingBuffer);
 
-            // 6. Создаем VkImageView
-            VkImageViewCreateInfo viewInfo{};
-            viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
             viewInfo.image = tex.image;
             viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
             viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
             viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            viewInfo.subresourceRange.baseMipLevel = 0;
             viewInfo.subresourceRange.levelCount = 1;
-            viewInfo.subresourceRange.baseArrayLayer = 0;
             viewInfo.subresourceRange.layerCount = 1;
             vkCreateImageView(graphics::internal::context.device, &viewInfo, nullptr, &tex.view);
 
-            // 7. Создаем VkSampler
-            VkSamplerCreateInfo samplerInfo{};
-            samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+            VkSamplerCreateInfo samplerInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
             samplerInfo.magFilter = VK_FILTER_LINEAR;
             samplerInfo.minFilter = VK_FILTER_LINEAR;
             samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
             samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
             samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-            samplerInfo.anisotropyEnable = VK_FALSE;
-            samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-            samplerInfo.unnormalizedCoordinates = VK_FALSE;
-            samplerInfo.compareEnable = VK_FALSE;
             samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
             vkCreateSampler(graphics::internal::context.device, &samplerInfo, nullptr, &tex.sampler);
 
@@ -399,15 +358,6 @@ namespace application {
             g_scene_data.proj[1][1] *= -1.0f;
 
             std::memcpy(g_scene_ubo.mapped, &g_scene_data, sizeof(SceneUBO));
-
-            if (g_point_lights.size() < MAX_LIGHTS) {
-                g_point_lights[0].position.w = (float)g_point_lights.size() - 1;
-                std::memcpy(g_point_ssbo.mapped, g_point_lights.data(), sizeof(PointLight) * MAX_LIGHTS);
-            }
-            if (g_spot_lights.size() < MAX_LIGHTS) {
-                g_spot_lights[0].position.w = (float)g_spot_lights.size() - 1;
-                std::memcpy(g_spot_ssbo.mapped, g_spot_lights.data(), sizeof(SpotLight) * MAX_LIGHTS);
-            }
         }
 
         void updateModelUniform(ModelData& model, const glm::vec4& overrideColor = glm::vec4(-1.0f)) {
@@ -431,51 +381,6 @@ namespace application {
             std::memcpy(model.ubo_buffer.mapped, &model.ubo, sizeof(ModelUBO));
         }
 
-        void updateUniformBuffers() {
-            updateSceneUniforms();
-            updateModelUniform(g_object);
-
-            int boxIdx = 0;
-            for (size_t i = 1; i < g_point_lights.size() && boxIdx < MAX_LIGHTS * 2; ++i) {
-                g_light_boxes[boxIdx].position = glm::vec3(g_point_lights[i].position);
-                updateModelUniform(g_light_boxes[boxIdx], g_point_lights[i].color);
-                boxIdx++;
-            }
-            int coneIdx = 0;
-            for (size_t i = 1; i < g_spot_lights.size() && boxIdx < MAX_LIGHTS * 2; ++i) {
-                g_light_boxes[boxIdx].position = glm::vec3(g_spot_lights[i].position);
-                updateModelUniform(g_light_boxes[boxIdx], g_spot_lights[i].color);
-                boxIdx++;
-
-                // Конус
-                g_spot_cones[coneIdx].position = glm::vec3(g_spot_lights[i].position);
-                g_spot_cones[coneIdx].scale = glm::vec3(1.0f);
-
-                glm::vec3 dir = glm::normalize(glm::vec3(g_spot_lights[i].direction));
-
-                glm::mat4 rotMatrix = glm::mat4(1.0f);
-                if (glm::length(dir) > 0.0f) {
-                    glm::vec3 zAxis = -dir;
-                    glm::vec3 up = (std::abs(zAxis.y) > 0.99f) ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
-                    glm::vec3 xAxis = glm::normalize(glm::cross(up, zAxis));
-                    glm::vec3 yAxis = glm::cross(zAxis, xAxis);
-
-                    rotMatrix[0] = glm::vec4(xAxis, 0.0f);
-                    rotMatrix[1] = glm::vec4(yAxis, 0.0f);
-                    rotMatrix[2] = glm::vec4(zAxis, 0.0f);
-                    rotMatrix[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-                }
-
-                g_spot_cones[coneIdx].ubo.model = glm::translate(glm::mat4(1.0f), g_spot_cones[coneIdx].position) * rotMatrix;
-                g_spot_cones[coneIdx].ubo.albedo = glm::vec4(1.0f);
-                g_spot_cones[coneIdx].ubo.specColor = glm::vec4(0.0f);
-                g_spot_cones[coneIdx].ubo.specParams = glm::vec4(1.0f);
-
-                std::memcpy(g_spot_cones[coneIdx].ubo_buffer.mapped, &g_spot_cones[coneIdx].ubo, sizeof(ModelUBO));
-                coneIdx++;
-            }
-        }
-
     } // namespace
 
     // ==========================================
@@ -484,14 +389,21 @@ namespace application {
 
     bool initialize()
     {
-        // Загружаем текстуры
-        std::cerr << "Loading textures..." << std::endl;
+        // 1. Загрузка текстур
         g_albedo_textures[0] = createTexture("textures/albedo1.jpg");
         g_albedo_textures[1] = createTexture("textures/albedo2.jpg");
         g_albedo_textures[2] = createTexture("textures/albedo3.jpg");
         g_specular_texture = createTexture("textures/specular.jpg");
         g_emissive_texture = createTexture("textures/emissive.jpg");
-        std::cerr << "Textures loaded!" << std::endl;
+
+        // 2. Настройка объектов
+        g_objects[0].position = glm::vec3(-1.2f, 0.0f, 0.0f);
+        g_objects[0].current_albedo_index = 0; // Смайлик
+
+        g_objects[1].position = glm::vec3(1.2f, 0.0f, 0.0f);
+        g_objects[1].scale = glm::vec3(0.6f);
+        g_objects[1].current_albedo_index = 2; // Единорог
+        g_objects[1].anim_phase = 3.14159f; // В противофазе
 
         PointLight defPoint{};
         defPoint.params = glm::vec4(1.0f, 0.14f, 0.07f, 1.0f);
@@ -526,7 +438,9 @@ namespace application {
         g_point_ssbo = graphics::createBuffer(sizeof(PointLight) * MAX_LIGHTS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, true);
         g_spot_ssbo = graphics::createBuffer(sizeof(SpotLight) * MAX_LIGHTS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, true);
 
-        g_object.ubo_buffer = graphics::createBuffer(sizeof(ModelUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, true);
+        for (int i = 0; i < 2; ++i) {
+            g_objects[i].ubo_buffer = graphics::createBuffer(sizeof(ModelUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, true);
+        }
         for (int i = 0; i < MAX_LIGHTS * 2; ++i) {
             g_light_boxes[i].ubo_buffer = graphics::createBuffer(sizeof(ModelUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, true);
         }
@@ -536,37 +450,19 @@ namespace application {
 
         g_scene_layout = graphics::createSceneSetLayout();
         g_model_layout = graphics::createModelSetLayout();
-        g_descriptor_pool = graphics::createDescriptorPool(MAX_LIGHTS * 4);
+        g_texture_layout = graphics::createTextureSetLayout();
+        g_descriptor_pool = graphics::createDescriptorPool(MAX_LIGHTS * 6);
 
         g_scene_set = graphics::allocateDescriptorSet(g_descriptor_pool, g_scene_layout);
-        g_object.set = graphics::allocateDescriptorSet(g_descriptor_pool, g_model_layout);
-        // 1. Создаем МАКЕТ (Layout) для текстуры (мы объявили эту функцию в graphics.hpp)
-        g_texture_layout = graphics::createTextureSetLayout();
 
-        // 2. Выделяем сам дескриптор (пропуск) из нашего общего пула
-        g_object_texture_set = graphics::allocateDescriptorSet(g_descriptor_pool, g_texture_layout);
+        for (int i = 0; i < 2; ++i) {
+            g_objects[i].model_set = graphics::allocateDescriptorSet(g_descriptor_pool, g_model_layout);
+            g_objects[i].texture_set = graphics::allocateDescriptorSet(g_descriptor_pool, g_texture_layout);
+        }
+        for (int i = 0; i < MAX_LIGHTS * 2; ++i) g_light_boxes[i].model_set = graphics::allocateDescriptorSet(g_descriptor_pool, g_model_layout);
+        for (int i = 0; i < MAX_LIGHTS; ++i) g_spot_cones[i].model_set = graphics::allocateDescriptorSet(g_descriptor_pool, g_model_layout);
 
-        // ... (код выше: создание g_object_texture_set)
-
-        // 3. Заполняем пропуск информацией о трех картинках
-        VkDescriptorImageInfo albedoInfo{ g_albedo_textures[0].sampler, g_albedo_textures[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo specInfo{ g_specular_texture.sampler, g_specular_texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo emisInfo{ g_emissive_texture.sampler, g_emissive_texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-
-        VkWriteDescriptorSet texWrites[3]{};
-        // Альбедо (binding = 0)
-        texWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; texWrites[0].dstSet = g_object_texture_set; texWrites[0].dstBinding = 0; texWrites[0].descriptorCount = 1; texWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; texWrites[0].pImageInfo = &albedoInfo;
-        // Specular (binding = 1)
-        texWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; texWrites[1].dstSet = g_object_texture_set; texWrites[1].dstBinding = 1; texWrites[1].descriptorCount = 1; texWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; texWrites[1].pImageInfo = &specInfo;
-        // Emissive (binding = 2)
-        texWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; texWrites[2].dstSet = g_object_texture_set; texWrites[2].dstBinding = 2; texWrites[2].descriptorCount = 1; texWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; texWrites[2].pImageInfo = &emisInfo;
-
-        vkUpdateDescriptorSets(graphics::internal::context.device, 3, texWrites, 0, nullptr);
-
-        for (int i = 0; i < MAX_LIGHTS * 2; ++i) g_light_boxes[i].set = graphics::allocateDescriptorSet(g_descriptor_pool, g_model_layout); // ЭТО ОСТАВИТЬ!
-        for (int i = 0; i < MAX_LIGHTS * 2; ++i) g_light_boxes[i].set = graphics::allocateDescriptorSet(g_descriptor_pool, g_model_layout);
-        for (int i = 0; i < MAX_LIGHTS; ++i) g_spot_cones[i].set = graphics::allocateDescriptorSet(g_descriptor_pool, g_model_layout);
-
+        // Привязка дескрипторов
         VkDescriptorBufferInfo scene_info{ g_scene_ubo.buffer, 0, VK_WHOLE_SIZE };
         VkDescriptorBufferInfo point_info{ g_point_ssbo.buffer, 0, VK_WHOLE_SIZE };
         VkDescriptorBufferInfo spot_info{ g_spot_ssbo.buffer, 0, VK_WHOLE_SIZE };
@@ -583,33 +479,37 @@ namespace application {
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; write.dstSet = set; write.dstBinding = 0; write.descriptorCount = 1; write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; write.pBufferInfo = &info;
             vkUpdateDescriptorSets(graphics::internal::context.device, 1, &write, 0, nullptr);
             };
-        writeModelSet(g_object.set, g_object.ubo_buffer);
-        for (int i = 0; i < MAX_LIGHTS * 2; ++i) writeModelSet(g_light_boxes[i].set, g_light_boxes[i].ubo_buffer);
-        for (int i = 0; i < MAX_LIGHTS; ++i) writeModelSet(g_spot_cones[i].set, g_spot_cones[i].ubo_buffer);
+        for (int i = 0; i < 2; ++i) writeModelSet(g_objects[i].model_set, g_objects[i].ubo_buffer);
+        for (int i = 0; i < MAX_LIGHTS * 2; ++i) writeModelSet(g_light_boxes[i].model_set, g_light_boxes[i].ubo_buffer);
+        for (int i = 0; i < MAX_LIGHTS; ++i) writeModelSet(g_spot_cones[i].model_set, g_spot_cones[i].ubo_buffer);
 
-        // Теперь в массиве 3 элемента!
+        auto writeTextureSet = [&](VkDescriptorSet set, int albedoIdx) {
+            VkDescriptorImageInfo albedoInfo{ g_albedo_textures[albedoIdx].sampler, g_albedo_textures[albedoIdx].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo specInfo{ g_specular_texture.sampler, g_specular_texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo emisInfo{ g_emissive_texture.sampler, g_emissive_texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+
+            VkWriteDescriptorSet texWrites[3]{};
+            texWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; texWrites[0].dstSet = set; texWrites[0].dstBinding = 0; texWrites[0].descriptorCount = 1; texWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; texWrites[0].pImageInfo = &albedoInfo;
+            texWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; texWrites[1].dstSet = set; texWrites[1].dstBinding = 1; texWrites[1].descriptorCount = 1; texWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; texWrites[1].pImageInfo = &specInfo;
+            texWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; texWrites[2].dstSet = set; texWrites[2].dstBinding = 2; texWrites[2].descriptorCount = 1; texWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; texWrites[2].pImageInfo = &emisInfo;
+            vkUpdateDescriptorSets(graphics::internal::context.device, 3, texWrites, 0, nullptr);
+            };
+        for (int i = 0; i < 2; ++i) writeTextureSet(g_objects[i].texture_set, g_objects[i].current_albedo_index);
+
+        // Pipeline Layout
         VkDescriptorSetLayout layouts[] = { g_scene_layout, g_model_layout, g_texture_layout };
-
         VkPipelineLayoutCreateInfo pl_info{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-        // Указываем, что теперь у нас 3 сета 
         pl_info.setLayoutCount = 3;
         pl_info.pSetLayouts = layouts;
 
-        // Настраиваем Push Constants (передаем 4 float'а: время и флаг)
         VkPushConstantRange push_constant{};
-        push_constant.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT; // Только для фрагментного шейдера
+        push_constant.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         push_constant.offset = 0;
-        push_constant.size = sizeof(float) * 4; 
+        push_constant.size = sizeof(float) * 4; // 4 флоата теперь
 
         pl_info.pushConstantRangeCount = 1;
         pl_info.pPushConstantRanges = &push_constant;
 
-        // Создаем Pipeline Layout (он теперь знает про Push Constants)
-        vkCreatePipelineLayout(graphics::internal::context.device, &pl_info, nullptr, &g_object_pipeline_layout);
-        vkCreatePipelineLayout(graphics::internal::context.device, &pl_info, nullptr, &g_simple_pipeline_layout);
-        vkCreatePipelineLayout(graphics::internal::context.device, &pl_info, nullptr, &g_line_pipeline_layout);
-
-        // Применяем новые правила ко всем нашим пайплайнам
         vkCreatePipelineLayout(graphics::internal::context.device, &pl_info, nullptr, &g_object_pipeline_layout);
         vkCreatePipelineLayout(graphics::internal::context.device, &pl_info, nullptr, &g_simple_pipeline_layout);
         vkCreatePipelineLayout(graphics::internal::context.device, &pl_info, nullptr, &g_line_pipeline_layout);
@@ -651,7 +551,6 @@ namespace application {
         if (g_simple_pipeline_layout) vkDestroyPipelineLayout(context.device, g_simple_pipeline_layout, nullptr);
         if (g_line_pipeline_layout) vkDestroyPipelineLayout(context.device, g_line_pipeline_layout, nullptr);
 
-        // Уничтожаем текстуры
         for (int i = 0; i < NUM_ALBEDO_TEXTURES; ++i) {
             vkDestroySampler(context.device, g_albedo_textures[i].sampler, nullptr);
             vkDestroyImageView(context.device, g_albedo_textures[i].view, nullptr);
@@ -665,7 +564,7 @@ namespace application {
         vmaDestroyImage(context.allocator, g_emissive_texture.image, g_emissive_texture.allocation);
 
         graphics::destroyBuffer(g_scene_ubo); graphics::destroyBuffer(g_point_ssbo); graphics::destroyBuffer(g_spot_ssbo);
-        graphics::destroyBuffer(g_object.ubo_buffer);
+        for (int i = 0; i < 2; ++i) graphics::destroyBuffer(g_objects[i].ubo_buffer);
         for (int i = 0; i < MAX_LIGHTS * 2; ++i) graphics::destroyBuffer(g_light_boxes[i].ubo_buffer);
         for (int i = 0; i < MAX_LIGHTS; ++i) graphics::destroyBuffer(g_spot_cones[i].ubo_buffer);
 
@@ -674,42 +573,149 @@ namespace application {
         graphics::destroyBuffer(g_index_buffer); graphics::destroyBuffer(g_vertex_buffer);
 
         if (g_descriptor_pool) vkDestroyDescriptorPool(context.device, g_descriptor_pool, nullptr);
+        if (g_texture_layout) vkDestroyDescriptorSetLayout(context.device, g_texture_layout, nullptr);
         if (g_model_layout) vkDestroyDescriptorSetLayout(context.device, g_model_layout, nullptr);
         if (g_scene_layout) vkDestroyDescriptorSetLayout(context.device, g_scene_layout, nullptr);
-        if (g_texture_layout) vkDestroyDescriptorSetLayout(context.device, g_texture_layout, nullptr); 
     }
 
     void update(double time)
     {
-        if (ImGui::Begin("Lab 3 - Textures")) {
-            const char* albedo_names[] = { "Smoking Smiley", "Vas (Alien)", "Fat Unicorn" };
-            if (ImGui::Combo("Albedo Texture", &g_current_albedo_index, albedo_names, IM_ARRAYSIZE(albedo_names))) {
-                // Когда пользователь меняет текстуру, мы обновляем дескриптор
-                VkDescriptorImageInfo imageInfo{};
-                imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                imageInfo.imageView = g_albedo_textures[g_current_albedo_index].view;
-                imageInfo.sampler = g_albedo_textures[g_current_albedo_index].sampler;
+        static double last_time = 0.0;
+        const float dt = (last_time == 0.0) ? 0.0f : static_cast<float>(time - last_time);
+        last_time = time;
 
-                VkWriteDescriptorSet texWrite{};
-                texWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                texWrite.dstSet = g_object_texture_set;
-                texWrite.dstBinding = 0;
-                texWrite.descriptorCount = 1;
-                texWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                texWrite.pImageInfo = &imageInfo;
-                vkUpdateDescriptorSets(graphics::internal::context.device, 1, &texWrite, 0, nullptr);
+        for (int i = 0; i < 2; ++i) {
+            if (g_objects[i].animate) {
+                g_objects[i].anim_phase += dt * g_objects[i].anim_speed;
+                g_objects[i].position.x = g_objects[i].anim_radius * std::cos(g_objects[i].anim_phase);
+                g_objects[i].position.z = g_objects[i].anim_radius * std::sin(g_objects[i].anim_phase);
+                g_objects[i].rotation.y = glm::degrees(g_objects[i].anim_phase) * 2.0f;
             }
         }
-        ImGui::Text("Current Index: %d", g_current_albedo_index);
-        ImGui::Checkbox("Enable Emissive (Cat)", &g_show_emissive);
-        ImGui::Checkbox("Enable Specular (Blik)", &g_show_specular);
+
+        if (ImGui::Begin("Lab 3 - Textures & Everything")) {
+            ImGui::SeparatorText("Camera");
+            ImGui::SliderFloat("Yaw", &g_cam_yaw, -180.0f, 180.0f);
+            ImGui::SliderFloat("Pitch", &g_cam_pitch, -89.0f, 89.0f);
+            ImGui::SliderFloat("Radius", &g_cam_radius, 1.0f, 20.0f);
+            ImGui::SliderFloat("FOV", &g_fov, 30.0f, 90.0f);
+
+            const char* albedo_names[] = { "Smoking Smiley", "Vas (Alien)", "Fat Unicorn" };
+
+            for (int i = 0; i < 2; ++i) {
+                auto& o = g_objects[i];
+                ImGui::SeparatorText(("Object " + std::to_string(i)).c_str());
+
+                ImGui::Checkbox(("Visible##vis" + std::to_string(i)).c_str(), &o.visible);
+                ImGui::SliderFloat3(("Position##pos" + std::to_string(i)).c_str(), &o.position.x, -5.0f, 5.0f);
+                ImGui::SliderFloat3(("Rotation##rot" + std::to_string(i)).c_str(), &o.rotation.x, -180.0f, 180.0f);
+                ImGui::SliderFloat3(("Scale##scl" + std::to_string(i)).c_str(), &o.scale.x, 0.1f, 3.0f);
+
+                ImGui::Checkbox(("Animate##a" + std::to_string(i)).c_str(), &o.animate);
+                ImGui::SliderFloat(("Speed##spd" + std::to_string(i)).c_str(), &o.anim_speed, 0.0f, 5.0f);
+                ImGui::SliderFloat(("Radius##rad" + std::to_string(i)).c_str(), &o.anim_radius, 0.0f, 5.0f);
+
+                // Выбор текстуры для каждого объекта
+                if (ImGui::Combo(("Albedo##" + std::to_string(i)).c_str(), &o.current_albedo_index, albedo_names, IM_ARRAYSIZE(albedo_names))) {
+                    VkDescriptorImageInfo imageInfo{};
+                    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    imageInfo.imageView = g_albedo_textures[o.current_albedo_index].view;
+                    imageInfo.sampler = g_albedo_textures[o.current_albedo_index].sampler;
+
+                    VkWriteDescriptorSet texWrite{};
+                    texWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    texWrite.dstSet = o.texture_set;
+                    texWrite.dstBinding = 0;
+                    texWrite.descriptorCount = 1;
+                    texWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    texWrite.pImageInfo = &imageInfo;
+                    vkUpdateDescriptorSets(graphics::internal::context.device, 1, &texWrite, 0, nullptr);
+                }
+
+                ImGui::Checkbox(("Emissive##" + std::to_string(i)).c_str(), &o.enable_emissive);
+                ImGui::Checkbox(("Specular##" + std::to_string(i)).c_str(), &o.enable_specular);
+            }
+
+            ImGui::Separator();
+            ImGui::SeparatorText("Lighting");
+            if (ImGui::Button("Add Point Light") && g_point_lights.size() < MAX_LIGHTS) {
+                PointLight l{};
+                l.position = glm::vec4((rand() % 100) / 50.0f - 1.0f, 1.0f, (rand() % 100) / 50.0f - 1.0f, 1.0f);
+                l.color = glm::vec4(1.0f, 0.5f, 0.2f, 1.0f);
+                l.params = glm::vec4(1.0f, 0.14f, 0.07f, 1.0f);
+                g_point_lights.push_back(l);
+            }
+
+            // Слайдеры для точечных источников
+            for (size_t i = 1; i < g_point_lights.size(); ++i) {
+                ImGui::PushID((int)i);
+                ImGui::Text("Point %d", (int)i);
+                ImGui::SliderFloat3("Pos", &g_point_lights[i].position.x, -5.0f, 5.0f);
+                ImGui::ColorEdit3("Col", &g_point_lights[i].color.x);
+                ImGui::PopID();
+            }
+
+            if (ImGui::Button("Add Spot Light") && g_spot_lights.size() < MAX_LIGHTS) {
+                SpotLight l{};
+                l.position = glm::vec4(2.0f, 2.0f, 2.0f, 1.0f);
+                l.direction = glm::vec4(-1.0f, -1.0f, -1.0f, 0.0f);
+                l.color = glm::vec4(0.2f, 0.5f, 1.0f, 1.0f);
+                l.params = glm::vec4(1.0f, 0.14f, 0.07f, cos(glm::radians(12.5f)));
+                l.params2 = glm::vec4(cos(glm::radians(25.0f)), 0.0f, 0.0f, 0.0f);
+                g_spot_lights.push_back(l);
+            }
+
+            // Слайдеры для прожекторов
+            for (size_t i = 1; i < g_spot_lights.size(); ++i) {
+                ImGui::PushID((int)(i + 100));
+                ImGui::Text("Spot %d", (int)i);
+                ImGui::SliderFloat3("Pos", &g_spot_lights[i].position.x, -5.0f, 5.0f);
+                ImGui::SliderFloat3("Dir", &g_spot_lights[i].direction.x, -1.0f, 1.0f);
+                ImGui::ColorEdit3("Col", &g_spot_lights[i].color.x);
+                ImGui::PopID();
+            }
+            ImGui::Checkbox("Show Light Sources", &g_show_lights);
+        }
         ImGui::End();
     }
 
     void render(const graphics::internal::FrameData& fd)
     {
         auto& context = graphics::internal::context;
-        updateUniformBuffers();
+        updateSceneUniforms();
+
+        for (int i = 0; i < 2; ++i) updateModelUniform(g_objects[i]);
+
+        int boxIdx = 0;
+        for (size_t i = 1; i < g_point_lights.size() && boxIdx < MAX_LIGHTS * 2; ++i) {
+            g_light_boxes[boxIdx].position = glm::vec3(g_point_lights[i].position);
+            updateModelUniform(g_light_boxes[boxIdx], g_point_lights[i].color);
+            boxIdx++;
+        }
+        int coneIdx = 0;
+        for (size_t i = 1; i < g_spot_lights.size() && boxIdx < MAX_LIGHTS * 2; ++i) {
+            g_light_boxes[boxIdx].position = glm::vec3(g_spot_lights[i].position);
+            updateModelUniform(g_light_boxes[boxIdx], g_spot_lights[i].color);
+            boxIdx++;
+
+            g_spot_cones[coneIdx].position = glm::vec3(g_spot_lights[i].position);
+            glm::vec3 dir = glm::normalize(glm::vec3(g_spot_lights[i].direction));
+            glm::mat4 rotMatrix = glm::mat4(1.0f);
+            if (glm::length(dir) > 0.0f) {
+                glm::vec3 zAxis = -dir;
+                glm::vec3 up = (std::abs(zAxis.y) > 0.99f) ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+                glm::vec3 xAxis = glm::normalize(glm::cross(up, zAxis));
+                glm::vec3 yAxis = glm::cross(zAxis, xAxis);
+                rotMatrix[0] = glm::vec4(xAxis, 0.0f); rotMatrix[1] = glm::vec4(yAxis, 0.0f);
+                rotMatrix[2] = glm::vec4(zAxis, 0.0f); rotMatrix[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+            }
+            g_spot_cones[coneIdx].ubo.model = glm::translate(glm::mat4(1.0f), g_spot_cones[coneIdx].position) * rotMatrix;
+            g_spot_cones[coneIdx].ubo.albedo = glm::vec4(1.0f);
+            g_spot_cones[coneIdx].ubo.specColor = glm::vec4(0.0f);
+            g_spot_cones[coneIdx].ubo.specParams = glm::vec4(1.0f);
+            std::memcpy(g_spot_cones[coneIdx].ubo_buffer.mapped, &g_spot_cones[coneIdx].ubo, sizeof(ModelUBO));
+            coneIdx++;
+        }
 
         vkResetCommandBuffer(fd.command_buffer, 0);
         VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
@@ -730,44 +736,53 @@ namespace application {
 
         VkDeviceSize offset = 0;
 
+        // 1. Додекаэдры
         vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_object_pipeline);
-        vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_object_pipeline_layout, 0, 1, &g_scene_set, 0, nullptr);
-        vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_object_pipeline_layout, 1, 1, &g_object.set, 0, nullptr);
-        vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_object_pipeline_layout, 2, 1, &g_object_texture_set, 0, nullptr); 
         vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &g_vertex_buffer.buffer, &offset);
         vkCmdBindIndexBuffer(fd.command_buffer, g_index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-        // 4 флоата: время, вобблинг, emissive, specular
-        float pushData[4] = { (float)glfwGetTime(), 1.0f, g_show_emissive ? 1.0f : 0.0f, g_show_specular ? 1.0f : 0.0f };
-        vkCmdPushConstants(fd.command_buffer, g_object_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushData), pushData);
-        vkCmdDrawIndexed(fd.command_buffer, g_index_count, 1, 0, 0, 0);
+        vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_object_pipeline_layout, 0, 1, &g_scene_set, 0, nullptr);
 
+        float time = (float)glfwGetTime();
+        for (int i = 0; i < 2; ++i) {
+            if (!g_objects[i].visible) continue;
+
+            vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_object_pipeline_layout, 1, 1, &g_objects[i].model_set, 0, nullptr);
+            vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_object_pipeline_layout, 2, 1, &g_objects[i].texture_set, 0, nullptr);
+
+            float pushData[4] = { time, 1.0f, g_objects[i].enable_emissive ? 1.0f : 0.0f, g_objects[i].enable_specular ? 1.0f : 0.0f };
+            vkCmdPushConstants(fd.command_buffer, g_object_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushData), pushData);
+
+            vkCmdDrawIndexed(fd.command_buffer, g_index_count, 1, 0, 0, 0);
+        }
+
+        // 2. Кубики и Конусы
         if (g_show_lights) {
             vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_simple_pipeline);
             vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_simple_pipeline_layout, 0, 1, &g_scene_set, 0, nullptr);
             vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &g_cube_vertex_buffer.buffer, &offset);
             vkCmdBindIndexBuffer(fd.command_buffer, g_cube_index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
-            int boxIdx = 0;
+            int boxIdx2 = 0;
             for (size_t i = 1; i < g_point_lights.size(); ++i) {
-                vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_simple_pipeline_layout, 1, 1, &g_light_boxes[boxIdx].set, 0, nullptr);
+                vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_simple_pipeline_layout, 1, 1, &g_light_boxes[boxIdx2].model_set, 0, nullptr);
                 vkCmdDrawIndexed(fd.command_buffer, g_cube_index_count, 1, 0, 0, 0);
-                boxIdx++;
+                boxIdx2++;
             }
             for (size_t i = 1; i < g_spot_lights.size(); ++i) {
-                vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_simple_pipeline_layout, 1, 1, &g_light_boxes[boxIdx].set, 0, nullptr);
+                vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_simple_pipeline_layout, 1, 1, &g_light_boxes[boxIdx2].model_set, 0, nullptr);
                 vkCmdDrawIndexed(fd.command_buffer, g_cube_index_count, 1, 0, 0, 0);
-                boxIdx++;
+                boxIdx2++;
             }
 
             vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_line_pipeline);
             vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_line_pipeline_layout, 0, 1, &g_scene_set, 0, nullptr);
             vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &g_line_vertex_buffer.buffer, &offset);
 
-            int coneIdx = 0;
+            int coneIdx2 = 0;
             for (size_t i = 1; i < g_spot_lights.size(); ++i) {
-                vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_line_pipeline_layout, 1, 1, &g_spot_cones[coneIdx].set, 0, nullptr);
+                vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_line_pipeline_layout, 1, 1, &g_spot_cones[coneIdx2].model_set, 0, nullptr);
                 vkCmdDraw(fd.command_buffer, g_line_vertex_count, 1, 0, 0);
-                coneIdx++;
+                coneIdx2++;
             }
         }
 
