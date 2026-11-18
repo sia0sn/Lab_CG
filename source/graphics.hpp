@@ -21,6 +21,7 @@ namespace graphics {
         VmaMemoryUsage     memory_usage,
         bool               persistent_map,
         const void* data = nullptr);
+    Buffer createDeviceLocalBuffer(VkDeviceSize size, VkBufferUsageFlags usage, const void* data);
 
     void destroyBuffer(Buffer& b);
 

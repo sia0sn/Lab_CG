@@ -290,5 +290,56 @@ namespace graphics {
         vkCreateDescriptorSetLayout(internal::context.device, &info, nullptr, &layout);
         return layout;
     }
+    Buffer createDeviceLocalBuffer(VkDeviceSize size, VkBufferUsageFlags usage, const void* data)
+    {
+        // 1. Создаем Staging буфер в RAM и копируем туда данные
+        Buffer staging = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO, false, data);
+
+        // 2. Создаем буфер в VRAM (без флага Host Access)
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = size;
+        bufferInfo.usage = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo allocInfo{};
+        allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE; // <-- Указываем, что хотим VRAM
+
+        Buffer result;
+        vmaCreateBuffer(internal::context.allocator, &bufferInfo, &allocInfo, &result.buffer, &result.allocation, &result.info);
+
+        // 3. Копируем из Staging в VRAM через командный буфер
+        VkCommandPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+        poolInfo.queueFamilyIndex = internal::context.graphics_queue_index;
+        VkCommandPool tempPool;
+        vkCreateCommandPool(internal::context.device, &poolInfo, nullptr, &tempPool);
+
+        VkCommandBufferAllocateInfo allocCmd{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+        allocCmd.commandPool = tempPool;
+        allocCmd.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocCmd.commandBufferCount = 1;
+        VkCommandBuffer cmd;
+        vkAllocateCommandBuffers(internal::context.device, &allocCmd, &cmd);
+
+        VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cmd, &beginInfo);
+
+        VkBufferCopy copyRegion{};
+        copyRegion.size = size;
+        vkCmdCopyBuffer(cmd, staging.buffer, result.buffer, 1, &copyRegion);
+
+        vkEndCommandBuffer(cmd);
+        VkSubmitInfo submitInfo{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &cmd;
+        vkQueueSubmit(internal::context.graphics_queue, 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(internal::context.graphics_queue);
+
+        vkDestroyCommandPool(internal::context.device, tempPool, nullptr);
+        destroyBuffer(staging);
+
+        return result;
+    }
 
 } // namespace graphics
