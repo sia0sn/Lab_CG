@@ -41,6 +41,8 @@ namespace graphics {
     VkDescriptorSetLayout createSceneSetLayout();
     VkDescriptorSetLayout createModelSetLayout();
 
+    VkDescriptorSetLayout createTextureSetLayout();
+
     VkDescriptorPool      createDescriptorPool(uint32_t max_sets);
     VkDescriptorSet       allocateDescriptorSet(VkDescriptorPool      pool,
         VkDescriptorSetLayout layout);

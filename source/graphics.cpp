@@ -232,6 +232,7 @@ namespace graphics {
         VkDescriptorPoolSize sizes[] = {
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, max_sets * 2 },
             { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, max_sets * 2 },
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, max_sets } 
         };
 
         VkDescriptorPoolCreateInfo info{};
@@ -256,6 +257,38 @@ namespace graphics {
         VkDescriptorSet set = VK_NULL_HANDLE;
         vkAllocateDescriptorSets(internal::context.device, &info, &set);
         return set;
+    }
+
+    VkDescriptorSetLayout createTextureSetLayout()
+    {
+        VkDescriptorSetLayoutBinding bindings[3]{};
+
+        // 0: Albedo
+        bindings[0].binding = 0;
+        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        // 1: Specular
+        bindings[1].binding = 1;
+        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        // 2: Emissive
+        bindings[2].binding = 2;
+        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[2].descriptorCount = 1;
+        bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        info.bindingCount = 3;
+        info.pBindings = bindings;
+
+        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+        vkCreateDescriptorSetLayout(internal::context.device, &info, nullptr, &layout);
+        return layout;
     }
 
 } // namespace graphics
